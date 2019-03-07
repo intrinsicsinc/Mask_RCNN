@@ -69,6 +69,49 @@ def random_colors(N, bright=True):
     return colors
 
 
+def draw_frame(image, boxes, masks, class_ids, class_names,
+                      scores=None):
+    """
+    boxes: [num_instance, (y1, x1, y2, x2, class_id)] in image coordinates.
+    masks: [height, width, num_instances]
+    class_ids: [num_instances]
+    class_names: list of class names of the dataset
+    scores: (optional) confidence scores for each box
+    """
+    # Number of instances
+    N = boxes.shape[0]
+    if not N:
+        print("\n*** No instances to display *** \n")
+    else:
+        assert boxes.shape[0] == masks.shape[-1] == class_ids.shape[0]
+    # Show area outside image boundaries.
+    height, width = image.shape[:2]
+    masked_image = image.astype(np.uint32).copy()
+    person_count = 0
+    # For each detection
+    for i in range(N):
+        color = (0.2, 0.8, 0.2)
+
+        # Bounding box
+        if not np.any(boxes[i]):
+            # Skip this instance. Has no bbox. Likely lost in image cropping.
+            continue
+        y1, x1, y2, x2 = boxes[i]
+
+        # Determine score and label
+        class_id = class_ids[i]
+        score = scores[i] if scores is not None else None
+        label = class_names[class_id]
+
+        # Apply person masks to the image
+        if label == 'person':
+            mask = masks[:, :, i]
+            masked_image = apply_mask(masked_image, mask, color)
+            person_count += 1
+
+    return masked_image.astype(np.uint8), person_count
+
+
 def apply_mask(image, mask, color, alpha=0.5):
     """Apply the given mask to the image.
     """

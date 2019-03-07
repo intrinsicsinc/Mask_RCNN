@@ -29,6 +29,9 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+coco/
+output/
+frames/
 
 # Installer logs
 pip-log.txt
