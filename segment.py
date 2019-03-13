@@ -2,14 +2,18 @@
 # coding: utf-8
 
 import os
+import csv
 import cv2
 import sys
 import json
 import math
 import random
+import shutil
 import argparse
 import skimage.io
 import matplotlib
+import statistics
+import subprocess
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -43,7 +47,7 @@ class InferenceConfig(coco.CocoConfig):
     # one image at a time. Batch size = GPU_COUNT * IMAGES_PER_GPU
     GPU_COUNT = 1
     IMAGES_PER_GPU = 2
-    DETECTION_MIN_CONFIDENCE = 0.55
+    DETECTION_MIN_CONFIDENCE = 0.6
 
 config = InferenceConfig()
 config.display()
@@ -75,30 +79,30 @@ class_names = ['BG', 'person', 'bicycle', 'car', 'motorcycle', 'airplane',
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--video', type=str)
+    parser.add_argument('--video', type=str, default='')
+    parser.add_argument('--dir', type=str, default='')
     args = parser.parse_args()
     return args
 
-def process_batch(frames):
+def process_batch(frames, i, people_counts):
     """
     Segment a list of images, produce and save the output frame
     and return the next frame number with a list of person counts
     """
-    global i, person_counts
     fps = 15
     results = model.detect(frames, verbose=1)
 
     for frame, r in zip(frames, results):
         output_frame, count = visualize.draw_frame(frame, r['rois'],
                     r['masks'], r['class_ids'], class_names, r['scores'])
-        person_counts.append(count)
+        people_counts.append(count)
 
         fig, axs = plt.subplots(2, figsize=(10, 10), gridspec_kw = {'height_ratios':[2, 1.2]})
 
         height, width = frame.shape[:2]
         axs[0].imshow(output_frame, extent=(0,width,0,height), shape=(width,height))
 
-        averages = calculate_averages(person_counts, 3*fps)
+        averages = calculate_averages(people_counts, 3*fps)
         axs[1].plot(averages)
         axs[1].set_xlabel('Time')
         axs[1].set_ylabel('# of Persons')
@@ -107,9 +111,11 @@ def process_batch(frames):
         axs[1].grid(b=True)
 
         i += 1
-        output_path = os.path.join('output', '{}.jpg'.format(i))
+        output_path = os.path.join('frames', '{}.jpg'.format(i))
         plt.savefig(output_path, bbox_inches='tight')
         plt.close(fig)
+
+    return i
 
 def calculate_averages(counts, n):
     length = 150
@@ -118,22 +124,29 @@ def calculate_averages(counts, n):
     return averages[-length:]
 
 def tag_video(video):
-    global i, person_counts
+    basename = os.path.basename(video)
+    # Delete old frames
+    oldframes = [os.path.join('frames', f) for f in os.listdir('frames')]
+    for f in oldframes:
+        os.remove(f)
     # Open video with OpenCV
     capture = cv2.VideoCapture(video)
     if not capture.isOpened():
         raise IOError('Unable to open video: {}'.format(video))
-
-    # Open VideoWriter with OpenCV for creating output video
-    fourcc = cv2.VideoWriter_fourcc(*'X264')
+    # Get video metadata
     fps = int(capture.get(cv2.CAP_PROP_FPS))
     size = (int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
             int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-
+    # Open VideoWriter with OpenCV for creating output video
+    fourcc = cv2.VideoWriter_fourcc(*'X264')
     # For each frame of the video
+    i = 0
+    # Collect a list of frames to be batch processed
     frames = []
+    # Collect a list of the # of people detected in each frame
+    people_counts = []
     while capture.isOpened():
-        # Read next frame, process when batch is full
+        # Read next frame
         ret, rawframe = capture.read()
         if not ret:
             break
@@ -141,16 +154,40 @@ def tag_video(video):
         frames.append(im)
 
         if len(frames) == 2:
-            process_batch(frames)
+            # Process frames and empty batch
+            i = process_batch(frames, i, people_counts)
             frames = []
 
+        if i % 10 == 0:
+            with open('output/{}-counts.csv'.format(basename), 'w') as f:
+                writer = csv.writer(f)
+                for count in people_counts:
+                    writer.writerow([count])
+
     capture.release()
+
+    cmd = ['ffmpeg', '-y',
+            '-r', str(fps),
+            '-f', 'image2',
+            '-i', 'frames/%d.jpg',
+            '-vf', 'pad=ceil(iw/2)*2:ceil(ih/2)*2',
+            'output/{}-segmented.mp4'.format(basename)]
+    subprocess.call(cmd)
+
+    stats = {'mean': statistics.mean(people_counts),
+             'median': statistics.median(people_counts)}
+    with open('output/{}-stats.json'.format(basename), 'w') as fp:
+        json.dump(stats, fp)
+
 
 # Parse CLI arguments
 args = parse_args()
 
-# Tag the target video
-i = 0
-person_counts = []
-tag_video(args.video)
+# Tag the target video(s)
+if args.video:
+    tag_video(args.video)
+elif args.dir and os.path.isdir(args.dir):
+    for path in os.listdir(args.dir):
+        video = os.path.join(args.dir, path)
+        tag_video(video)
 
